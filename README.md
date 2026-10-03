@@ -11,13 +11,13 @@ The project is built in phases, from plain gRPC locally up to Kubernetes, the Ga
 
 ## Status
 
-**Phase 0 (scaffold) is done.** The repo skeleton, protobuf tooling and Makefile are in place.
-No business logic yet. See [LEARNINGS.md](LEARNINGS.md) for notes per phase.
+**Phase 1 is done.** The three services talk gRPC locally with in-memory storage (no database yet).
+See [LEARNINGS.md](LEARNINGS.md) for notes per phase.
 
 | Phase | Topic                                         | Status  |
 |-------|-----------------------------------------------|---------|
 | 0     | Scaffold: monorepo, buf, Makefile             | done    |
-| 1     | gRPC locally, in-memory storage               | planned |
+| 1     | gRPC locally, in-memory storage               | done    |
 | 2     | Docker, Compose, Postgres                     | planned |
 | 2b    | Nginx as reverse proxy                        | planned |
 | 3     | Kubernetes (kind)                             | planned |
@@ -40,6 +40,11 @@ cmd/
   gateway/            HTTP entrypoint (main only, wiring)
   order-service/      gRPC OrderService
   inventory-service/  gRPC InventoryService
+internal/
+  gateway/            REST handler, gRPC code -> HTTP status mapping
+  order/              OrderService server + in-memory store
+  inventory/          InventoryService server + in-memory store
+  grpcx/              shared logging interceptor and graceful shutdown
 proto/                .proto contracts (order/v1, inventory/v1)
 gen/go/               generated Go code (committed)
 buf.yaml              buf module + lint config
@@ -64,3 +69,20 @@ make run-order
 make run-inventory
 make clean
 ```
+
+## Try it
+
+Run each service in its own terminal: `make run-inventory`, `make run-order`, `make run-gateway`.
+
+```sh
+curl -X POST localhost:8080/orders -d '{"sku":"apple","quantity":3}'   # 201
+curl -X POST localhost:8080/orders -d '{"sku":"durian","quantity":1}'  # 404 unknown sku
+curl -X POST localhost:8080/orders -d '{"sku":"cherry","quantity":1}'  # 409 out of stock
+
+# Call inventory directly over gRPC
+go tool buf curl --schema proto --protocol grpc --http2-prior-knowledge \
+  -d '{"sku":"apple"}' http://localhost:50052/inventory.v1.InventoryService/CheckStock
+```
+
+Seed stock: apple 10, banana 5, cherry 0. Ports: gateway 8080, order 50051, inventory 50052
+(override with `HTTP_ADDR`, `GRPC_ADDR`, `ORDER_ADDR`, `INVENTORY_ADDR`).

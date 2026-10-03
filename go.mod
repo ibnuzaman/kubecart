@@ -8,7 +8,10 @@ tool (
 	google.golang.org/protobuf/cmd/protoc-gen-go
 )
 
-require google.golang.org/protobuf v1.36.12
+require (
+	google.golang.org/grpc v1.84.0
+	google.golang.org/protobuf v1.36.12
+)
 
 require (
 	buf.build/gen/go/bufbuild/bufplugin/protocolbuffers/go v1.36.12-20260722160903-4d94f3df3a7b.2 // indirect
