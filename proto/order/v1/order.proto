@@ -1,0 +1,6 @@
+syntax = "proto3";
+
+package order.v1;
+
+// Placeholder for Phase 0 so `make proto` can be verified end to end.
+// OrderService and its messages are defined in Phase 1.

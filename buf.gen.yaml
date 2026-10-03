@@ -1,0 +1,16 @@
+version: v2
+# Managed mode sets go_package for us, so .proto files stay free of Go-specific options.
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: github.com/ibnuzaman/kubecart/gen/go
+plugins:
+  # Plugins run via `go tool`, so their versions are pinned in go.mod (no global installs).
+  - local: ["go", "tool", "protoc-gen-go"]
+    out: gen/go
+    opt: paths=source_relative
+  - local: ["go", "tool", "protoc-gen-go-grpc"]
+    out: gen/go
+    opt: paths=source_relative
+clean: true
