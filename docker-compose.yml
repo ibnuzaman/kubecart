@@ -115,9 +115,27 @@ services:
       retries: 3
       start_period: 5s
     restart: unless-stopped
+    # Two replicas so nginx has something to load balance. No ports: clients
+    # reach the gateways only through nginx.
+    deploy:
+      replicas: 2
+
+  nginx:
+    image: nginx:1.30.5-alpine
+    volumes:
+      # Mount the directory, not the single file: single-file bind mounts
+      # can serve stale or truncated content after the file is edited.
+      - ./deploy/nginx/conf.d:/etc/nginx/conf.d:ro
+      # Created by `make certs`; not committed.
+      - ./deploy/nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      gateway:
+        condition: service_healthy
+    restart: unless-stopped
     ports:
-      # The only published port. 127.0.0.1 keeps it off your LAN.
-      - "127.0.0.1:8080:8080"
+      # The only entry point. 127.0.0.1 keeps it off your LAN.
+      - "127.0.0.1:8080:80"
+      - "127.0.0.1:8443:443"
 
 volumes:
   pgdata:

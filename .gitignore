@@ -4,3 +4,6 @@ LEARNINGS.md
 CLAUDE.md
 
 .env
+
+# TLS private keys never go in git, even self-signed dev ones (make certs).
+/deploy/nginx/certs/
