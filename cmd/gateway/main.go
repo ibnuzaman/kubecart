@@ -1,10 +1,13 @@
 // Command gateway is the HTTP/REST entry point. It translates REST calls
 // into gRPC calls to order-service.
+//
+// Usage: gateway [serve|healthcheck] (default: serve)
 package main
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -22,13 +25,27 @@ import (
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil)).With("service", "gateway")
-	if err := run(logger); err != nil {
-		logger.Error("exiting", "error", err)
+
+	cmd := "serve"
+	if len(os.Args) > 1 {
+		cmd = os.Args[1]
+	}
+	var err error
+	switch cmd {
+	case "serve":
+		err = serve(logger)
+	case "healthcheck":
+		err = healthcheck(envOr("HTTP_ADDR", ":8080"))
+	default:
+		err = fmt.Errorf("unknown command %q (want serve or healthcheck)", cmd)
+	}
+	if err != nil {
+		logger.Error("exiting", "command", cmd, "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(logger *slog.Logger) error {
+func serve(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -69,6 +86,25 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	logger.Info("stopped gracefully")
+	return nil
+}
+
+// healthcheck calls the local /healthz. Distroless images have no curl, so
+// the binary probes itself.
+func healthcheck(listenAddr string) error {
+	_, port, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://" + net.JoinHostPort("127.0.0.1", port) + "/healthz")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("status %d", resp.StatusCode)
+	}
 	return nil
 }
 

@@ -1,0 +1,123 @@
+# Local development only. The passwords below are throwaway values, not
+# secrets; Phase 3 moves credentials into Kubernetes Secrets.
+name: kubecart
+
+services:
+  postgres:
+    image: postgres:18.6-alpine
+    environment:
+      POSTGRES_PASSWORD: postgres-dev-pw
+      ORDERS_DB_PASSWORD: orders-dev-pw
+      INVENTORY_DB_PASSWORD: inventory-dev-pw
+    volumes:
+      # Postgres 18+ images keep data under /var/lib/postgresql/18/docker,
+      # so the volume goes on /var/lib/postgresql (not .../data).
+      - pgdata:/var/lib/postgresql
+      - ./deploy/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # -h 127.0.0.1 forces TCP. During first-time init Postgres runs a
+      # temporary server on the Unix socket only, so a socket check would
+      # report ready before the init script has created the databases.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    ports:
+      # For local GUI tools (pgAdmin). Services don't need this: they reach
+      # Postgres as postgres:5432 on the compose network. 127.0.0.1 keeps it
+      # off your LAN.
+      - "127.0.0.1:5432:5432"
+
+  # Migrate jobs reuse the image their server builds (same binary, embedded
+  # migrations). Only the server has `build:`, since two services building
+  # one image tag at once collide; pull_policy: never stops Compose from
+  # looking for these local-only tags on Docker Hub.
+  inventory-migrate:
+    image: kubecart/inventory-service:dev
+    pull_policy: never
+    command: ["migrate"]
+    environment:
+      DATABASE_URL: postgres://inventory:inventory-dev-pw@postgres:5432/inventory?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  inventory:
+    image: kubecart/inventory-service:dev
+    build:
+      context: .
+      args:
+        SERVICE: inventory-service
+    environment:
+      DATABASE_URL: postgres://inventory:inventory-dev-pw@postgres:5432/inventory?sslmode=disable&pool_max_conns=10
+      GRPC_ADDR: ":50052"
+    depends_on:
+      inventory-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/app", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  order-migrate:
+    image: kubecart/order-service:dev
+    pull_policy: never
+    command: ["migrate"]
+    environment:
+      DATABASE_URL: postgres://orders:orders-dev-pw@postgres:5432/orders?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  order:
+    image: kubecart/order-service:dev
+    build:
+      context: .
+      args:
+        SERVICE: order-service
+    environment:
+      DATABASE_URL: postgres://orders:orders-dev-pw@postgres:5432/orders?sslmode=disable&pool_max_conns=10
+      GRPC_ADDR: ":50051"
+      # Service name = DNS name on the compose network.
+      INVENTORY_ADDR: inventory:50052
+    depends_on:
+      order-migrate:
+        condition: service_completed_successfully
+      inventory:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/app", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  gateway:
+    image: kubecart/gateway:dev
+    build:
+      context: .
+      args:
+        SERVICE: gateway
+    environment:
+      HTTP_ADDR: ":8080"
+      ORDER_ADDR: order:50051
+    depends_on:
+      order:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/app", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+    ports:
+      # The only published port. 127.0.0.1 keeps it off your LAN.
+      - "127.0.0.1:8080:8080"
+
+volumes:
+  pgdata:

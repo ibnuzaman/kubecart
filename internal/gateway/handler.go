@@ -24,6 +24,12 @@ func NewHandler(orders orderv1.OrderServiceClient, timeout time.Duration) http.H
 	h := &handler{orders: orders, timeout: timeout}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /orders", h.createOrder)
+	// Liveness of the gateway process only. It deliberately doesn't call
+	// order-service: if it did, an order outage would also mark every gateway
+	// unhealthy and restart them for nothing.
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
 	return mux
 }
 
