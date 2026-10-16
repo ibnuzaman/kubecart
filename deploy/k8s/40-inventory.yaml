@@ -1,0 +1,106 @@
+# ClusterIP Service: one stable virtual IP + DNS name ("inventory") in
+# front of the inventory pods, reachable only from inside the cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: inventory
+  namespace: kubecart
+spec:
+  selector:
+    app.kubernetes.io/name: inventory
+  ports:
+    - name: grpc
+      port: 50052
+      targetPort: grpc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inventory
+  namespace: kubecart
+spec:
+  replicas: 2
+  # Rolling update: start one new pod, wait until it's ready, then stop one
+  # old pod. maxUnavailable: 0 keeps full capacity during the rollout.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: inventory
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: inventory
+        app.kubernetes.io/part-of: kubecart
+    spec:
+      # The distroless image sets USER by name (nonroot). The kubelet can only
+      # verify runAsNonRoot against a numeric UID, so set it explicitly.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: inventory
+          image: kubecart/inventory-service:dev
+          # Images are loaded into kind with `kind load`, not pulled.
+          imagePullPolicy: IfNotPresent
+          args: ["serve"]
+          ports:
+            - name: grpc
+              containerPort: 50052
+          env:
+            - name: GRPC_ADDR
+              value: ":50052"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: inventory-db
+                  key: DATABASE_URL
+          # Native gRPC probes call grpc.health.v1 Check on the pod IP.
+          # startupProbe covers the up-to-30s wait for Postgres in db.Connect;
+          # liveness and readiness start only after it passes.
+          startupProbe:
+            grpc:
+              port: 50052
+            periodSeconds: 2
+            failureThreshold: 20
+          # Not ready -> removed from the Service, but not restarted.
+          readinessProbe:
+            grpc:
+              port: 50052
+            periodSeconds: 5
+            failureThreshold: 2
+          # Failing 3 times in a row -> container restarted. Kept lenient so a
+          # briefly slow pod isn't killed.
+          livenessProbe:
+            grpc:
+              port: 50052
+            periodSeconds: 10
+            failureThreshold: 3
+          lifecycle:
+            # On delete, endpoint removal and SIGTERM happen in parallel. Waiting
+            # 5s first lets clients stop sending here before shutdown starts.
+            # The sleep action runs in the kubelet, so distroless needs no shell.
+            preStop:
+              sleep:
+                seconds: 5
+          # Memory limit = request: the pod never uses more than it reserved.
+          # CPU gets a generous limit to avoid throttling; Go sets GOMAXPROCS
+          # from it automatically.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

@@ -1,7 +1,8 @@
 SERVICES := gateway order-service inventory-service
 BIN_DIR  := bin
 
-.PHONY: proto build test run-gateway run-order run-inventory certs up down logs clean
+.PHONY: proto build test run-gateway run-order run-inventory certs up down logs \
+	images kind-up kind-load k8s-deploy k8s-up k8s-down clean
 
 ## proto: lint .proto files and regenerate Go code into gen/go
 proto:
@@ -52,6 +53,55 @@ down:
 
 logs:
 	docker compose logs -f
+
+# --- Kubernetes (kind) -------------------------------------------------------
+
+KIND_CLUSTER := kubecart
+K8S_NS       := kubecart
+# Never :latest: kind-loaded images need a fixed tag (IfNotPresent pull policy).
+IMAGE_TAG    ?= dev
+
+## images: build the three service images, tagged $(IMAGE_TAG). The version
+## label gives each tag a distinct image ID, which `kind load` relies on.
+images:
+	@for s in $(SERVICES); do \
+		docker build -q --build-arg SERVICE=$$s \
+			--label org.opencontainers.image.version=$(IMAGE_TAG) \
+			-t kubecart/$$s:$(IMAGE_TAG) . || exit 1; \
+	done
+
+## kind-up: create the local cluster (no-op if it already exists)
+kind-up:
+	@kind get clusters | grep -qx $(KIND_CLUSTER) || kind create cluster --config deploy/kind/cluster.yaml
+
+## kind-load: build images and copy them into the kind node; the cluster
+## can't see the images in your local Docker otherwise
+kind-load: images
+	kind load docker-image --name $(KIND_CLUSTER) $(foreach s,$(SERVICES),kubecart/$(s):$(IMAGE_TAG))
+
+## k8s-deploy: apply everything in dependency order. Kubernetes has no
+## depends_on, so the ordering lives here: Postgres ready -> migrate Jobs
+## complete -> Deployments rolled out.
+k8s-deploy:
+	kubectl apply -f deploy/k8s/00-namespace.yaml -f deploy/k8s/10-config.yaml
+	kubectl -n $(K8S_NS) create configmap postgres-init-scripts \
+		--from-file=deploy/postgres/init/ --dry-run=client -o yaml | kubectl apply -f -
+	kubectl apply -f deploy/k8s/20-postgres.yaml
+	kubectl -n $(K8S_NS) rollout status statefulset/postgres --timeout=180s
+	kubectl -n $(K8S_NS) delete job inventory-migrate order-migrate --ignore-not-found
+	kubectl apply -f deploy/k8s/30-migrate-jobs.yaml
+	kubectl -n $(K8S_NS) wait --for=condition=complete --timeout=180s job/inventory-migrate job/order-migrate
+	kubectl apply -f deploy/k8s/40-inventory.yaml -f deploy/k8s/41-order.yaml -f deploy/k8s/42-gateway.yaml
+	@for d in inventory order gateway; do \
+		kubectl -n $(K8S_NS) rollout status deployment/$$d --timeout=180s || exit 1; \
+	done
+
+## k8s-up: cluster + images + deploy, from nothing to running
+k8s-up: kind-up kind-load k8s-deploy
+
+## k8s-down: delete the whole cluster, including the Postgres volume
+k8s-down:
+	kind delete cluster --name $(KIND_CLUSTER)
 
 clean:
 	rm -rf $(BIN_DIR)

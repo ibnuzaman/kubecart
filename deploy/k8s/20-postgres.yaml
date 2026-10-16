@@ -1,0 +1,97 @@
+# Postgres as a StatefulSet: a stable pod name (postgres-0) and a disk
+# (PersistentVolumeClaim) that survives pod restarts and rescheduling.
+#
+# The init script comes from the postgres-init-scripts ConfigMap, which
+# `make k8s-deploy` builds from deploy/postgres/init/ so compose and
+# Kubernetes share one copy. Like in compose, it only runs on an empty volume.
+
+# Headless Service (no ClusterIP): DNS "postgres" resolves straight to the
+# pod IP. StatefulSets require one for their stable network identity.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: kubecart
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: kubecart
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/part-of: kubecart
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:18.6-alpine
+          ports:
+            - name: postgres
+              containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: postgres-init
+          volumeMounts:
+            # Postgres 18+ keeps data under /var/lib/postgresql/18/docker.
+            - name: data
+              mountPath: /var/lib/postgresql
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          # TCP (-h 127.0.0.1) for the same reason as in compose: during first
+          # init a temporary server listens on the Unix socket only.
+          #
+          # startupProbe gives first-time init up to 2 minutes; liveness and
+          # readiness only start once it has passed, so a slow init isn't
+          # killed by the liveness probe.
+          startupProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "postgres"]
+            periodSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "postgres"]
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "postgres"]
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+      volumes:
+        - name: init-scripts
+          configMap:
+            name: postgres-init-scripts
+            defaultMode: 0755
+  # One PVC per replica, named data-postgres-0. kind's default StorageClass
+  # (local-path) stores it on the node and deletes it with the PVC.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

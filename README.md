@@ -11,8 +11,8 @@ The project is built in phases, from plain gRPC locally up to Kubernetes, the Ga
 
 ## Status
 
-**Phase 2b is done.** The services run in Docker Compose behind Nginx (TLS, load balancing,
-rate limiting), backed by one Postgres instance with a separate database per service.
+**Phase 3 is done.** The stack runs on a local Kubernetes cluster (kind) with plain YAML manifests.
+Docker Compose with Nginx (Phase 2/2b) still works as a simpler local setup.
 See [LEARNINGS.md](LEARNINGS.md) for notes per phase.
 
 | Phase | Topic                                         | Status  |
@@ -21,7 +21,7 @@ See [LEARNINGS.md](LEARNINGS.md) for notes per phase.
 | 1     | gRPC locally, in-memory storage               | done    |
 | 2     | Docker, Compose, Postgres                     | done    |
 | 2b    | Nginx as reverse proxy                        | done    |
-| 3     | Kubernetes (kind)                             | planned |
+| 3     | Kubernetes (kind)                             | done    |
 | 4     | Gateway API                                   | planned |
 | 5     | Scaling and gRPC load balancing               | planned |
 | 6     | Observability (OpenTelemetry + Grafana stack) | planned |
@@ -52,6 +52,8 @@ deploy/nginx/conf.d/  reverse proxy: TLS, upstream, limit_req, gzip, access log
 deploy/nginx/certs/   self-signed cert from `make certs` (gitignored)
 Dockerfile            one multi-stage Dockerfile, --build-arg SERVICE=<cmd dir>
 docker-compose.yml    Postgres, migrate jobs, the three services, nginx
+deploy/kind/          kind cluster config (Kubernetes v1.37, pinned node image)
+deploy/k8s/           Kubernetes manifests, applied in order by `make k8s-deploy`
 proto/                .proto contracts (order/v1, inventory/v1)
 gen/go/               generated Go code (committed)
 buf.yaml              buf module + lint config
@@ -64,6 +66,7 @@ Makefile              common tasks
 - Go 1.27.1. An older local Go downloads it automatically via `GOTOOLCHAIN=auto`.
 - Docker with Compose v2+ (tested with Docker 29.1, Compose v5.0).
 - OpenSSL 3 for `make certs` (run automatically by `make up`).
+- For Kubernetes: kind v0.33+ and kubectl within one minor version of the cluster (v1.36-v1.38).
 - Nothing else to install: buf, protoc-gen-go and protoc-gen-go-grpc are pinned as
   `tool` dependencies in `go.mod` and run with `go tool <name>`.
 
@@ -101,3 +104,23 @@ docker compose exec postgres psql -U orders -d orders -c 'SELECT * FROM orders'
 Seed stock: apple 10, banana 5, cherry 0. Nginx is the only entry point: `127.0.0.1:8443` (HTTPS)
 and `127.0.0.1:8080` (redirects to HTTPS). Postgres is also published on `127.0.0.1:5432` for GUI tools.
 Each binary also has `migrate` and `healthcheck` subcommands (see `docker-compose.yml`).
+
+## Kubernetes (kind)
+
+```sh
+make k8s-up         # create cluster, build + load images, deploy in order
+kubectl -n kubecart get pods,svc,jobs,pvc
+
+kubectl -n kubecart port-forward svc/gateway 18080:8080 &
+curl -X POST localhost:18080/orders -d '{"sku":"apple","quantity":1}'
+
+# Rolling update to a new image tag
+make kind-load IMAGE_TAG=v2
+kubectl -n kubecart set image deployment/gateway gateway=kubecart/gateway:v2
+kubectl -n kubecart rollout status deployment/gateway
+
+make k8s-down       # delete the cluster (and the Postgres data)
+```
+
+`make k8s-deploy` replaces compose's `depends_on`: Postgres ready, then the migrate Jobs complete,
+then the Deployments roll out. Only port-forward reaches the cluster for now.

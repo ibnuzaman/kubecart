@@ -1,0 +1,11 @@
+# Local Kubernetes cluster: `make kind-up`.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: kubecart
+nodes:
+  # One node is enough for this phase. It runs the control plane and our
+  # pods; kind removes the control-plane taint when there are no workers.
+  - role: control-plane
+    # Pinned by digest, as the kind v0.33.0 release notes require: the tag
+    # alone may point to an image built for a different kind release.
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5

@@ -1,0 +1,46 @@
+# Non-secret settings shared by the services.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubecart-config
+  namespace: kubecart
+data:
+  # Service DNS names inside the namespace. Each resolves to a stable
+  # ClusterIP in front of that Deployment's pods.
+  INVENTORY_ADDR: inventory:50052
+  ORDER_ADDR: order:50051
+---
+# Local development only: these are throwaway values, committed so the
+# cluster works out of the box. A Secret is only base64-encoded, not
+# encrypted; real setups keep the values out of git (Sealed Secrets,
+# External Secrets, SOPS).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-init
+  namespace: kubecart
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: postgres-dev-pw
+  ORDERS_DB_PASSWORD: orders-dev-pw
+  INVENTORY_DB_PASSWORD: inventory-dev-pw
+---
+# The whole URL is secret because it contains the password. The same URL
+# serves the migrate Job and the server; db.Migrate strips pool_* params.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: inventory-db
+  namespace: kubecart
+type: Opaque
+stringData:
+  DATABASE_URL: postgres://inventory:inventory-dev-pw@postgres:5432/inventory?sslmode=disable&pool_max_conns=10
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: orders-db
+  namespace: kubecart
+type: Opaque
+stringData:
+  DATABASE_URL: postgres://orders:orders-dev-pw@postgres:5432/orders?sslmode=disable&pool_max_conns=10
